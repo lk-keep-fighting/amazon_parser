@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Sample Amazon Product</title>
+    <meta property="og:image" content="https://images.example.com/sample-hero.jpg" />
+    <script type="application/ld+json">
+    {
+        "@context": "http://schema.org",
+        "@type": "Product",
+        "name": "Sample Product Title",
+        "sku": "B012345678",
+        "image": ["https://images.example.com/sample-hero.jpg"],
+        "brand": {
+            "@type": "Thing",
+            "name": "SampleBrand"
+        },
+        "aggregateRating": {
+            "@type": "AggregateRating",
+            "ratingValue": "4.5",
+            "reviewCount": "1234"
+        },
+        "offers": {
+            "@type": "Offer",
+            "price": "19.99",
+            "priceCurrency": "USD"
+        }
+    }
+    </script>
+</head>
+<body>
+    <span id="productTitle">Sample Product Title</span>
+    <div id="corePriceDisplay_desktop_feature_div">
+        <span class="a-price">
+            <span class="a-offscreen">$19.99</span>
+        </span>
+    </div>
+
+    <div id="averageCustomerReviews_feature_div">
+        <span id="acrPopover" title="4.5 out of 5 stars">
+            <span class="a-icon-alt">4.5 out of 5 stars</span>
+        </span>
+        <span id="acrCustomerReviewText">1,234 ratings</span>
+    </div>
+
+    <div id="feature-bullets">
+        <ul class="a-unordered-list">
+            <li><span class="a-list-item">Bullet one feature</span></li>
+            <li><span class="a-list-item">Bullet two feature</span></li>
+            <li><span class="a-list-item">Bullet three feature</span></li>
+        </ul>
+    </div>
+
+    <div id="detailBullets_feature_div">
+        <ul>
+            <li><span class="a-text-bold">Brand:</span> SampleBrand </li>
+            <li><span class="a-text-bold">ASIN:</span> B012345678 </li>
+            <li><span class="a-text-bold">Manufacturer:</span> Sample Manufacturer Inc. </li>
+        </ul>
+    </div>
+
+    <table id="productDetails_techSpec_section_1" class="a-keyvalue">
+        <tr>
+            <th>Item Weight</th>
+            <td>1.2 pounds</td>
+        </tr>
+        <tr>
+            <th>Material</th>
+            <td>Plastic</td>
+        </tr>
+    </table>
+
+    <img id="landingImage" src="https://images.example.com/sample-hero-small.jpg" data-old-hires="https://images.example.com/sample-hero-large.jpg" />
+</body>
+</html>
