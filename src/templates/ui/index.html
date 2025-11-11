@@ -1,0 +1,135 @@
+{% macro render_display(display) -%}
+  {% if display.type == 'json' %}
+    <pre class="json-block">{{ display.json }}</pre>
+  {% elif display.type == 'list' %}
+    <ul class="value-list">
+      {% for item in display.lines %}
+        <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+  {% elif display.type in ('link', 'asin') %}
+    <a href="{{ display.url }}" target="_blank" rel="noopener noreferrer">{{ display.text }}</a>
+  {% elif display.type == 'number' %}
+    <span class="number">{{ display.text }}</span>
+  {% elif display.type == 'text' %}
+    <span>{{ display.text }}</span>
+  {% else %}
+    <span>{{ display.text }}</span>
+  {% endif %}
+{%- endmacro %}
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Amazon 商品解析预览</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='ui/styles.css') }}" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div class="container">
+        <h1>Amazon 商品解析预览</h1>
+        <p class="lede">
+          上传由批量解析生成的 Excel 工作簿，查看导入的商品数据以及结构化的解析结果。
+          JSON 字段会自动进行格式化展示。
+        </p>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <h2>上传 Excel 文件</h2>
+        <form class="upload-form" method="post" enctype="multipart/form-data">
+          <label class="file-input">
+            <input type="file" name="workbook" accept=".xlsx,.xlsm,.xltx,.xltm" />
+            <span>选择 Excel 文件</span>
+          </label>
+          <button type="submit" class="button">开始预览</button>
+          {% if file_name %}
+            <p class="hint">当前文件：{{ file_name }}</p>
+          {% endif %}
+        </form>
+        <p class="note">
+          提示：可以使用项目根目录中的 <code>output.xlsx</code> 作为示例。
+        </p>
+      </section>
+
+      {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+      {% endif %}
+
+      {% if imported_rows %}
+        <section class="card">
+          <h2>导入的商品数据</h2>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>行号</th>
+                <th>原始数据</th>
+                <th>类型</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in imported_rows %}
+                <tr>
+                  <td>{{ row.row_number }}</td>
+                  <td class="truncate">{{ render_display(row.display) }}</td>
+                  <td>
+                    {% if row.display.type == 'link' %}
+                      URL
+                    {% elif row.display.type == 'asin' %}
+                      ASIN
+                    {% elif row.display.type == 'text' %}
+                      文本
+                    {% elif row.display.type == 'number' %}
+                      数值
+                    {% else %}
+                      其它
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </section>
+      {% endif %}
+
+      {% if parsed_rows %}
+        <section class="card">
+          <h2>解析后的结果</h2>
+          <div class="product-list">
+            {% for row in parsed_rows %}
+              <article class="product-card">
+                <header class="product-card__header">
+                  <span class="badge">第 {{ row.row_number }} 行</span>
+                  {% if row.source.type != 'empty' %}
+                    <span class="source">
+                      {% if row.source.type in ('link', 'asin') %}
+                        <a href="{{ row.source.url }}" target="_blank" rel="noopener noreferrer">{{ row.source.text }}</a>
+                      {% else %}
+                        {{ row.source.text }}
+                      {% endif %}
+                    </span>
+                  {% endif %}
+                </header>
+                <div class="product-card__grid">
+                  {% for cell in row.cells %}
+                    <div class="product-card__cell">
+                      <div class="cell-label">{{ cell.header }}</div>
+                      <div class="cell-value">{{ render_display(cell.display) }}</div>
+                    </div>
+                  {% endfor %}
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        </section>
+      {% elif file_name and not error %}
+        <section class="card empty">
+          <p>未找到任何解析结果，请确认文件是否包含解析后的列。</p>
+        </section>
+      {% endif %}
+    </main>
+  </body>
+</html>
