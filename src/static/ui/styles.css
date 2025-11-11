@@ -127,8 +127,23 @@ body {
   padding: 1rem 1.25rem;
   border-radius: 12px;
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
+.alert[data-variant="info"],
+.alert:not([data-variant]) {
+  background: rgba(63, 130, 255, 0.12);
+  color: #1f3a8a;
+}
+
+.alert[data-variant="success"] {
+  background: rgba(16, 185, 129, 0.16);
+  color: #065f46;
+}
+
+.alert[data-variant="error"],
 .alert-error {
   background: rgba(255, 99, 132, 0.16);
   color: #a01037;
@@ -262,6 +277,7 @@ body {
 
 .value-list li {
   margin-bottom: 0.3rem;
+  line-height: 1.5;
 }
 
 .number {

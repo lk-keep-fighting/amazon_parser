@@ -16,7 +16,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from flask import Flask, render_template, request
+from flask import Flask, jsonify, render_template, request
 from openpyxl import load_workbook
 from werkzeug.datastructures import FileStorage
 
@@ -36,30 +36,20 @@ def create_app() -> Flask:
     )
     app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MiB upload limit
 
-    @app.route("/", methods=["GET", "POST"])
+    @app.route("/")
     def index() -> str:
-        context: Dict[str, Any] = {
-            "file_name": None,
-            "imported_rows": None,
-            "parsed_rows": None,
-            "row_count": 0,
-            "error": None,
-        }
+        return render_template("ui/index.html")
 
-        if request.method == "POST":
-            file = request.files.get("workbook")
-            if not file or not file.filename:
-                context["error"] = "请选择需要上传的 Excel 文件。"
-            else:
-                try:
-                    preview = _build_preview_from_upload(file)
-                except ValueError as exc:
-                    context["error"] = str(exc)
-                else:
-                    context.update(preview)
-                    context["file_name"] = file.filename
-
-        return render_template("ui/index.html", **context)
+    @app.post("/parse")
+    def parse_workbook() -> Any:
+        file = request.files.get("workbook")
+        if not file or not file.filename:
+            return jsonify({"status": "error", "message": "请选择需要上传的 Excel 文件。"}), 400
+        try:
+            preview = _build_preview_from_upload(file)
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+        return jsonify({"status": "ok", "data": preview})
 
     return app
 
