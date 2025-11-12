@@ -474,10 +474,11 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
         *,
         browser: str = "chromium",
         headless: bool = True,
-        wait_until: str = "networkidle",
-        navigation_timeout: float = 30000,
+        wait_until: Optional[str] = "load",
+        navigation_timeout: float = 45.0,
         settle_timeout: float = 250,
         extra_click_selectors: Optional[Iterable[str]] = None,
+        fallback_to_static: bool = True,
     ) -> None:
         super().__init__(session=None)
         self.browser = browser
@@ -485,6 +486,7 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
         self.wait_until = wait_until
         self.navigation_timeout_ms = self._coerce_timeout_ms(navigation_timeout)
         self.settle_timeout_ms = self._coerce_timeout_ms(settle_timeout) if settle_timeout else 0.0
+        self.fallback_to_static = fallback_to_static
         selectors = list(self.DEFAULT_EXPANDER_SELECTORS)
         if extra_click_selectors:
             for selector in extra_click_selectors:
@@ -493,7 +495,15 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
         self.expander_selectors: Tuple[str, ...] = tuple(selectors)
 
     def parse(self, url: str) -> AmazonProduct:
-        html = self._render_url(url)
+        try:
+            html = self._render_url(url)
+        except Exception as exc:
+            if not self.fallback_to_static:
+                raise
+            try:
+                return super().parse(url)
+            except Exception:
+                raise exc
         return self.parse_html(html, url=url)
 
     @staticmethod
@@ -534,7 +544,16 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
                 page = context.new_page()
                 page.set_default_navigation_timeout(self.navigation_timeout_ms)
                 page.set_default_timeout(self.navigation_timeout_ms)
-                page.goto(url, wait_until=self.wait_until)
+
+                goto_kwargs: Dict[str, Any] = {}
+                if self.wait_until:
+                    goto_kwargs["wait_until"] = self.wait_until
+                try:
+                    page.goto(url, **goto_kwargs)
+                except PlaywrightTimeoutError:
+                    # Continue with whatever content has loaded so far.
+                    pass
+
                 # Ensure background requests settle so that expander content is loaded.
                 try:
                     page.wait_for_load_state("networkidle", timeout=self.navigation_timeout_ms)
@@ -545,7 +564,8 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
                 self._expand_dynamic_sections(page)
 
                 if self.settle_timeout_ms:
-                    page.wait_for_timeout(self.settle_timeout_ms)
+                    with contextlib.suppress(PlaywrightError):
+                        page.wait_for_timeout(self.settle_timeout_ms)
 
                 return page.content()
         except PlaywrightTimeoutError as exc:

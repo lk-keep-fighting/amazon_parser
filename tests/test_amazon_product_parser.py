@@ -34,9 +34,34 @@ def test_create_parser_playwright_returns_subclass() -> None:
 
 def test_playwright_parser_requires_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("src.amazon_product_parser.sync_playwright", None, raising=False)
-    parser = PlaywrightAmazonProductParser()
+    parser = PlaywrightAmazonProductParser(fallback_to_static=False)
     with pytest.raises(RuntimeError):
         parser.parse("https://www.amazon.com/dp/B012345678")
+
+
+def test_playwright_parser_falls_back_to_static(monkeypatch: pytest.MonkeyPatch) -> None:
+    html = load_fixture("sample_product.html")
+
+    def fail_render(self: PlaywrightAmazonProductParser, url: str) -> str:
+        raise RuntimeError("render failed")
+
+    def fake_static_parse(self: AmazonProductParser, url: str) -> Any:  # type: ignore[override]
+        return AmazonProductParser().parse_html(html, url=url)
+
+    monkeypatch.setattr(
+        "src.amazon_product_parser.PlaywrightAmazonProductParser._render_url",
+        fail_render,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "src.amazon_product_parser.AmazonProductParser.parse",
+        fake_static_parse,
+        raising=False,
+    )
+
+    parser = PlaywrightAmazonProductParser()
+    product = parser.parse("https://www.amazon.com/dp/B012345678")
+    assert product.title == "Sample Product Title"
 
 
 def test_parse_full_product_html() -> None:
