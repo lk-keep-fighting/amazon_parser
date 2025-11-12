@@ -9,6 +9,9 @@ line.
 from __future__ import annotations
 
 import json
+import os
+import platform
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -26,6 +29,14 @@ class AmazonParserGUI:
         self.root.minsize(720, 520)
 
         self.parser = AmazonProductParser()
+        self._last_excel_destination: str | None = None
+
+        style = ttk.Style()
+        style.configure(
+            "Large.TButton",
+            padding=(16, 12),
+            font=("TkDefaultFont", 11, "bold"),
+        )
 
         container = ttk.Frame(root, padding=12)
         container.pack(fill="both", expand=True)
@@ -139,11 +150,24 @@ class AmazonParserGUI:
         )
         hint.grid(row=4, column=0, columnspan=3, sticky="w")
 
-        self.excel_button = ttk.Button(frame, text="Process workbook", command=self._on_process_excel)
-        self.excel_button.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        self.excel_button = ttk.Button(
+            frame,
+            text="Process workbook",
+            command=self._on_process_excel,
+            style="Large.TButton",
+        )
+        self.excel_button.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+
+        self.excel_open_button = ttk.Button(
+            frame,
+            text="Open output workbook",
+            command=self._on_open_excel_destination,
+            state="disabled",
+        )
+        self.excel_open_button.grid(row=6, column=0, columnspan=3, sticky="ew")
 
         excel_status = ttk.Label(frame, textvariable=self.excel_status_var, foreground="gray")
-        excel_status.grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        excel_status.grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -215,6 +239,8 @@ class AmazonParserGUI:
 
         self.excel_status_var.set("Processing workbook…")
         self.excel_button.config(state="disabled")
+        self.excel_open_button.config(state="disabled")
+        self._last_excel_destination = None
 
         def worker() -> None:
             try:
@@ -231,18 +257,58 @@ class AmazonParserGUI:
                     self.excel_status_var.set("Failed to process workbook")
                     messagebox.showerror("Excel processing failed", str(exc))
                     self.excel_button.config(state="normal")
+                    self.excel_open_button.config(state="disabled")
 
                 self.root.after(0, notify_error)
                 return
 
             def notify_success() -> None:
+                self._last_excel_destination = destination
                 self.excel_status_var.set(f"Workbook updated: {destination}")
                 messagebox.showinfo("Processing complete", f"Excel updated: {destination}")
                 self.excel_button.config(state="normal")
+                self.excel_open_button.config(state="normal")
 
             self.root.after(0, notify_success)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_open_excel_destination(self) -> None:
+        if not self._last_excel_destination:
+            messagebox.showinfo(
+                "No workbook",
+                "Run the batch processing to generate an output workbook before opening it.",
+            )
+            return
+
+        path = os.path.abspath(self._last_excel_destination)
+        if not os.path.exists(path):
+            self.excel_open_button.config(state="disabled")
+            messagebox.showwarning("File not found", f"Could not find the workbook at:\n{path}")
+            return
+
+        try:
+            system = platform.system()
+            if system == "Windows":
+                opener = getattr(os, "startfile", None)
+                if opener:
+                    opener(path)
+                else:
+                    raise OSError("Opening files is not supported on this platform.")
+            elif system == "Darwin":
+                subprocess.Popen(
+                    ["open", path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                subprocess.Popen(
+                    ["xdg-open", path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception as exc:
+            messagebox.showerror("Open failed", f"Failed to open the workbook: {exc}")
 
     # ------------------------------------------------------------------
     # Helpers
