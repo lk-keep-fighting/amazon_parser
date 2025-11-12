@@ -7,13 +7,36 @@ from typing import Any, Dict
 import pytest
 from openpyxl import Workbook, load_workbook
 
-from src.amazon_product_parser import AmazonProductParser, process_excel
+from src.amazon_product_parser import (
+    AmazonProductParser,
+    PlaywrightAmazonProductParser,
+    create_parser,
+    process_excel,
+)
 
 FIXTURES = Path(__file__).parent / "data"
 
 
 def load_fixture(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def test_create_parser_static_returns_default() -> None:
+    parser = create_parser("static")
+    assert isinstance(parser, AmazonProductParser)
+    assert not isinstance(parser, PlaywrightAmazonProductParser)
+
+
+def test_create_parser_playwright_returns_subclass() -> None:
+    parser = create_parser("playwright")
+    assert isinstance(parser, PlaywrightAmazonProductParser)
+
+
+def test_playwright_parser_requires_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.amazon_product_parser.sync_playwright", None, raising=False)
+    parser = PlaywrightAmazonProductParser()
+    with pytest.raises(RuntimeError):
+        parser.parse("https://www.amazon.com/dp/B012345678")
 
 
 def test_parse_full_product_html() -> None:

@@ -17,7 +17,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from .amazon_product_parser import AmazonProductParser, process_excel
+from .amazon_product_parser import create_parser, process_excel
 
 
 class AmazonParserGUI:
@@ -28,7 +28,7 @@ class AmazonParserGUI:
         self.root.title("Amazon Product Parser")
         self.root.minsize(720, 520)
 
-        self.parser = AmazonProductParser()
+        self.backend_var = tk.StringVar(value="static")
         self._last_excel_destination: str | None = None
 
         style = ttk.Style()
@@ -67,7 +67,7 @@ class AmazonParserGUI:
         self.notebook.add(frame, text="Single Product")
 
         frame.columnconfigure(1, weight=1)
-        frame.rowconfigure(3, weight=1)
+        frame.rowconfigure(4, weight=1)
 
         self.url_var = tk.StringVar()
         self.pretty_var = tk.BooleanVar(value=True)
@@ -90,12 +90,26 @@ class AmazonParserGUI:
         self.single_button = ttk.Button(frame, text="Parse product", command=self._on_parse_single)
         self.single_button.grid(row=1, column=2, sticky="e")
 
+        backend_label = ttk.Label(frame, text="Parser engine:")
+        backend_label.grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+        backend_static = ttk.Radiobutton(frame, text="Static HTML", variable=self.backend_var, value="static")
+        backend_static.grid(row=2, column=1, sticky="w", pady=(4, 0))
+
+        backend_dynamic = ttk.Radiobutton(
+            frame,
+            text="Playwright (dynamic)",
+            variable=self.backend_var,
+            value="playwright",
+        )
+        backend_dynamic.grid(row=2, column=2, sticky="w", pady=(4, 0))
+
         status_label = ttk.Label(frame, textvariable=self.single_status_var, foreground="gray")
-        status_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 4))
+        status_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 4))
 
         self.single_output = ScrolledText(frame, wrap="word", height=18)
         self.single_output.configure(state="disabled", font=("Courier New", 10))
-        self.single_output.grid(row=3, column=0, columnspan=3, sticky="nsew")
+        self.single_output.grid(row=4, column=0, columnspan=3, sticky="nsew")
 
     def _build_excel_tab(self) -> None:
         frame = ttk.Frame(self.notebook)
@@ -137,7 +151,21 @@ class AmazonParserGUI:
         column_label.grid(row=3, column=0, sticky="w")
 
         column_entry = ttk.Entry(frame, textvariable=self.excel_column_var, width=8)
-        column_entry.grid(row=3, column=1, sticky="w", pady=(0, 8))
+        column_entry.grid(row=3, column=1, sticky="w", pady=(0, 4))
+
+        backend_label = ttk.Label(frame, text="Parser engine:")
+        backend_label.grid(row=4, column=0, sticky="w")
+
+        backend_static = ttk.Radiobutton(frame, text="Static HTML", variable=self.backend_var, value="static")
+        backend_static.grid(row=4, column=1, sticky="w")
+
+        backend_dynamic = ttk.Radiobutton(
+            frame,
+            text="Playwright (dynamic)",
+            variable=self.backend_var,
+            value="playwright",
+        )
+        backend_dynamic.grid(row=4, column=2, sticky="w")
 
         hint = ttk.Label(
             frame,
@@ -148,7 +176,7 @@ class AmazonParserGUI:
             wraplength=660,
             justify="left",
         )
-        hint.grid(row=4, column=0, columnspan=3, sticky="w")
+        hint.grid(row=5, column=0, columnspan=3, sticky="w")
 
         self.excel_button = ttk.Button(
             frame,
@@ -156,7 +184,7 @@ class AmazonParserGUI:
             command=self._on_process_excel,
             style="Large.TButton",
         )
-        self.excel_button.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(12, 6))
+        self.excel_button.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(12, 6))
 
         self.excel_open_button = ttk.Button(
             frame,
@@ -164,10 +192,10 @@ class AmazonParserGUI:
             command=self._on_open_excel_destination,
             state="disabled",
         )
-        self.excel_open_button.grid(row=6, column=0, columnspan=3, sticky="ew")
+        self.excel_open_button.grid(row=7, column=0, columnspan=3, sticky="ew")
 
         excel_status = ttk.Label(frame, textvariable=self.excel_status_var, foreground="gray")
-        excel_status.grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        excel_status.grid(row=8, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -178,13 +206,22 @@ class AmazonParserGUI:
             messagebox.showwarning("Missing URL", "Please enter an Amazon product URL to parse.")
             return
 
+        try:
+            parser_instance = create_parser(self.backend_var.get())
+        except ValueError as exc:
+            messagebox.showerror("Unsupported parser engine", str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - defensive guard
+            messagebox.showerror("Parser initialisation failed", str(exc))
+            return
+
         self.single_status_var.set("Parsing product…")
         self.single_button.config(state="disabled")
         self._set_text(self.single_output, "")
 
         def worker() -> None:
             try:
-                product = self.parser.parse(url)
+                product = parser_instance.parse(url)
             except Exception as exc:  # pragma: no cover - network/UI runtime path
                 message = str(exc)
 
@@ -237,6 +274,15 @@ class AmazonParserGUI:
             messagebox.showwarning("Invalid column", "The URL column must be a positive integer.")
             return
 
+        try:
+            parser_instance = create_parser(self.backend_var.get())
+        except ValueError as exc:
+            messagebox.showerror("Unsupported parser engine", str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - defensive guard
+            messagebox.showerror("Parser initialisation failed", str(exc))
+            return
+
         self.excel_status_var.set("Processing workbook…")
         self.excel_button.config(state="disabled")
         self.excel_open_button.config(state="disabled")
@@ -249,7 +295,7 @@ class AmazonParserGUI:
                     output_path=output_path,
                     sheet_name=sheet_name,
                     column=column_index,
-                    parser=self.parser,
+                    parser=parser_instance,
                 )
             except Exception as exc:  # pragma: no cover - runtime path
 
