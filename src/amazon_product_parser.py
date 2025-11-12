@@ -473,7 +473,7 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
         self,
         *,
         browser: str = "chromium",
-        headless: bool = True,
+        headless: bool = False,
         wait_until: Optional[str] = "load",
         navigation_timeout: float = 45.0,
         settle_timeout: float = 250,
