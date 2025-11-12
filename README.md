@@ -15,6 +15,7 @@ run anywhere without a heavyweight browser dependency.
 - Converts the result into a serialisable Python dictionary.
 - Supports batch processing by reading an Excel workbook and appending structured results.
 - Provides a small CLI for ad-hoc usage.
+- Offers a lightweight web UI to preview imported workbooks and formatted parse results.
 
 ## Installation
 
@@ -48,6 +49,20 @@ product = parser.parse_html(html, url="https://www.amazon.com/dp/B012345678")
 ```bash
 python -m src.amazon_product_parser "https://www.amazon.com/dp/B003G2ZKRC" --pretty
 ```
+
+### Web UI preview
+
+A small Flask application is bundled to make it easier to inspect the contents of
+Excel workbooks that contain parsing results.  Launch it with:
+
+```bash
+python -m src.ui_app
+```
+
+Then open <http://127.0.0.1:5000/> in your browser and upload a workbook (for
+example the sample `output.xlsx` in the project root).  The interface lists the
+imported product identifiers alongside every parsed field, formats bullet lists
+as readable items, and pretty-prints JSON columns automatically.
 
 ### Batch processing from Excel
 

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Amazon 商品解析预览</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='ui/styles.css') }}" />
+  </head>
+  <body>
+    <header class="page-header">
+      <div class="container">
+        <h1>Amazon 商品解析预览</h1>
+        <p class="lede">
+          上传由批量解析生成的 Excel 工作簿，查看导入的商品数据以及结构化的解析结果。
+          JSON 字段会自动进行格式化展示。
+        </p>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <h2>上传并解析 Excel 文件</h2>
+        <form class="upload-form" method="post" enctype="multipart/form-data" data-role="upload-form">
+          <label class="file-input">
+            <input type="file" name="workbook" accept=".xlsx,.xlsm,.xltx,.xltm" data-role="file-input" />
+            <span>选择 Excel 文件</span>
+          </label>
+          <button type="submit" class="button">开始解析</button>
+        </form>
+        <p class="note">
+          提示：可以使用项目根目录中的 <code>output.xlsx</code> 作为示例。
+        </p>
+      </section>
+
+      <div class="alert" data-role="status" hidden></div>
+      <div class="alert alert-error" data-role="error" hidden></div>
+
+      <section class="card" data-role="imported-section" hidden>
+        <h2>导入的商品数据</h2>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>行号</th>
+              <th>原始数据</th>
+              <th>类型</th>
+            </tr>
+          </thead>
+          <tbody data-role="imported-body"></tbody>
+        </table>
+      </section>
+
+      <section class="card" data-role="parsed-section" hidden>
+        <h2>解析后的结果</h2>
+        <div class="product-list" data-role="parsed-list"></div>
+      </section>
+
+      <section class="card empty" data-role="parsed-empty" hidden>
+        <p>未找到任何解析结果，请确认文件是否包含解析后的列。</p>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='ui/js/app.js') }}" defer></script>
+  </body>
+</html>
