@@ -49,6 +49,16 @@ product = parser.parse_html(html, url="https://www.amazon.com/dp/B012345678")
 python -m src.amazon_product_parser "https://www.amazon.com/dp/B003G2ZKRC" --pretty
 ```
 
+### Graphical interface
+
+```bash
+python -m src.gui
+```
+
+This opens a Tkinter-based application that mirrors the CLI features. Use the
+"Single Product" tab to parse a single URL and the "Excel Batch" tab to process
+an entire workbook with the same options available on the command line.
+
 ### Batch processing from Excel
 
 The CLI can parse every Amazon URL stored in the first column of an Excel
