@@ -1,11 +1,11 @@
 """Amazon product parser.
 
 This module provides a lightweight parser that converts Amazon product pages
-into a structured :class:`AmazonProduct` data object.  It focuses on static HTML
-parsing via :mod:`requests` and :mod:`bs4`, keeping the implementation simple
-and dependency free from browser automation frameworks.
+into a structured :class:`AmazonProduct` data object.  It includes a static HTML
+parser powered by :mod:`requests` and :mod:`bs4`, and an optional
+Playwright-backed renderer for pages that require interactive expansion.
 
-The parser exposes two main entry points:
+The static parser exposes two main entry points:
 
 ``AmazonProductParser.parse(url)``
     Fetches the target URL and returns structured product information.
@@ -16,11 +16,14 @@ The parser exposes two main entry points:
 
 The resulting :class:`AmazonProduct` instance can be easily serialised with the
 ``to_dict`` helper.  A small CLI is available via ``python -m
-src.amazon_product_parser <amazon-url>``.
+src.amazon_product_parser <amazon-url>``.  Use
+``PlaywrightAmazonProductParser`` when the page relies on dynamic interactions
+(such as expandable specification tables).
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
@@ -31,6 +34,17 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from bs4 import BeautifulSoup
 from openpyxl import load_workbook
+
+try:  # pragma: no cover - optional dependency
+    from playwright.sync_api import (
+        Error as PlaywrightError,
+        TimeoutError as PlaywrightTimeoutError,
+        sync_playwright,
+    )
+except ImportError:  # pragma: no cover - optional dependency
+    PlaywrightError = Exception  # type: ignore
+    PlaywrightTimeoutError = Exception  # type: ignore
+    sync_playwright = None  # type: ignore
 
 # A conservative desktop user-agent keeps Amazon happy while remaining predictable
 DEFAULT_HEADERS: Dict[str, str] = {
@@ -436,6 +450,192 @@ class AmazonProductParser:
         return None
 
 
+class PlaywrightAmazonProductParser(AmazonProductParser):
+    """Render the product page with Playwright before parsing its HTML.
+
+    This parser delegates all extraction logic to :class:`AmazonProductParser`
+    after rendering the page in a headless browser. It is useful for Amazon
+    layouts that hide specification tables or detail sections behind expander
+    widgets.
+    """
+
+    DEFAULT_EXPANDER_SELECTORS: Tuple[str, ...] = (
+        "[data-action='a-expander-toggle']",
+        ".a-expander-header",
+        ".a-expander-toggle",
+        ".a-expander-prompt",
+        ".a-expander-content-fade .a-expander-prompt",
+        "button[aria-expanded='false']",
+        ".a-declarative[data-action='a-expander-toggle']",
+    )
+
+    def __init__(
+        self,
+        *,
+        browser: str = "chromium",
+        headless: bool = False,
+        wait_until: Optional[str] = "load",
+        navigation_timeout: float = 45.0,
+        settle_timeout: float = 250,
+        extra_click_selectors: Optional[Iterable[str]] = None,
+        fallback_to_static: bool = True,
+    ) -> None:
+        super().__init__(session=None)
+        self.browser = browser
+        self.headless = headless
+        self.wait_until = wait_until
+        self.navigation_timeout_ms = self._coerce_timeout_ms(navigation_timeout)
+        self.settle_timeout_ms = self._coerce_timeout_ms(settle_timeout) if settle_timeout else 0.0
+        self.fallback_to_static = fallback_to_static
+        selectors = list(self.DEFAULT_EXPANDER_SELECTORS)
+        if extra_click_selectors:
+            for selector in extra_click_selectors:
+                if selector not in selectors:
+                    selectors.append(selector)
+        self.expander_selectors: Tuple[str, ...] = tuple(selectors)
+
+    def parse(self, url: str) -> AmazonProduct:
+        try:
+            html = self._render_url(url)
+        except Exception as exc:
+            if not self.fallback_to_static:
+                raise
+            try:
+                return super().parse(url)
+            except Exception:
+                raise exc
+        return self.parse_html(html, url=url)
+
+    @staticmethod
+    def _coerce_timeout_ms(value: float) -> float:
+        if value <= 0:
+            raise ValueError("Timeout values must be greater than zero.")
+        # Treat small values as seconds for convenience.
+        return value * 1000.0 if value <= 120 else value
+
+    def _render_url(self, url: str) -> str:
+        if not url:
+            raise ValueError("url must be a non-empty string")
+        if sync_playwright is None:
+            raise RuntimeError(
+                "PlaywrightAmazonProductParser requires the 'playwright' package. "
+                "Install it via 'pip install playwright' and run 'playwright install'."
+            )
+
+        browser = None
+        context = None
+        try:
+            with sync_playwright() as playwright:
+                browser_factory = getattr(playwright, self.browser, None)
+                if browser_factory is None:
+                    raise ValueError(
+                        f"Unsupported Playwright browser '{self.browser}'. "
+                        "Valid options are 'chromium', 'firefox', or 'webkit'."
+                    )
+                browser = browser_factory.launch(headless=self.headless)
+                context = browser.new_context(
+                    user_agent=self.headers.get("User-Agent"),
+                    locale="en-US",
+                    extra_http_headers=self.headers,
+                )
+                context.set_default_navigation_timeout(self.navigation_timeout_ms)
+                context.set_default_timeout(self.navigation_timeout_ms)
+
+                page = context.new_page()
+                page.set_default_navigation_timeout(self.navigation_timeout_ms)
+                page.set_default_timeout(self.navigation_timeout_ms)
+
+                goto_kwargs: Dict[str, Any] = {}
+                if self.wait_until:
+                    goto_kwargs["wait_until"] = self.wait_until
+                try:
+                    page.goto(url, **goto_kwargs)
+                except PlaywrightTimeoutError:
+                    # Continue with whatever content has loaded so far.
+                    pass
+
+                # Ensure background requests settle so that expander content is loaded.
+                try:
+                    page.wait_for_load_state("networkidle", timeout=self.navigation_timeout_ms)
+                except PlaywrightTimeoutError:
+                    # Ignore network idle timeouts – the page might never reach this state.
+                    pass
+
+                self._expand_dynamic_sections(page)
+
+                if self.settle_timeout_ms:
+                    with contextlib.suppress(PlaywrightError):
+                        page.wait_for_timeout(self.settle_timeout_ms)
+
+                return page.content()
+        except PlaywrightTimeoutError as exc:
+            raise RuntimeError(f"Timed out while rendering {url!r} with Playwright.") from exc
+        except PlaywrightError as exc:
+            raise RuntimeError(f"Playwright failed while rendering {url!r}: {exc}") from exc
+        finally:
+            if context is not None:
+                with contextlib.suppress(Exception):
+                    context.close()
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    browser.close()
+
+    def _expand_dynamic_sections(self, page: Any) -> None:
+        try:
+            page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(150)
+        except PlaywrightError:
+            pass
+
+        for selector in self.expander_selectors:
+            try:
+                locator = page.locator(selector)
+                count = locator.count()
+            except PlaywrightError:
+                continue
+
+            for index in range(count):
+                element = locator.nth(index)
+                try:
+                    if element.is_visible():
+                        element.click()
+                        page.wait_for_timeout(100)
+                except PlaywrightError:
+                    continue
+
+        # Forcefully expand expander containers when clicking is not enough.
+        try:
+            page.evaluate(
+                """
+                () => {
+                    document.querySelectorAll('.a-expander-content, .a-expander').forEach((el) => {
+                        el.style.removeProperty('max-height');
+                        el.style.removeProperty('height');
+                        el.classList.remove('a-expander-collapsed-height');
+                        if (el.hasAttribute('aria-hidden')) {
+                            el.setAttribute('aria-hidden', 'false');
+                        }
+                    });
+                }
+                """
+            )
+        except PlaywrightError:
+            pass
+
+
+def create_parser(engine: str = "static") -> AmazonProductParser:
+    """Return a parser instance for the requested engine name."""
+
+    normalized = (engine or "static").strip().lower()
+    if normalized in ("", "static"):
+        return AmazonProductParser()
+    if normalized == "playwright":
+        return PlaywrightAmazonProductParser()
+    raise ValueError(
+        f"Unsupported parser engine '{engine}'. Expected 'static' or 'playwright'."
+    )
+
+
 # ----------------------------------------------------------------------
 # Utility helpers
 # ----------------------------------------------------------------------
@@ -701,9 +901,18 @@ def cli(argv: Optional[Iterable[str]] = None) -> int:
         default=1,
         help="1-based column index that contains Amazon URLs when processing Excel files",
     )
+    parser.add_argument(
+        "--engine",
+        choices=("static", "playwright"),
+        default="static",
+        help=(
+            "Parser engine to use. 'static' relies on requests/BeautifulSoup, while "
+            "'playwright' renders the page in a headless browser to expand dynamic sections."
+        ),
+    )
     args = parser.parse_args(args=list(argv) if argv is not None else None)
 
-    product_parser = AmazonProductParser()
+    product_parser = create_parser(args.engine)
 
     if args.excel:
         if not args.target:
