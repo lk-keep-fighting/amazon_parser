@@ -17,7 +17,14 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from .amazon_product_parser import create_parser, process_excel
+try:
+    from .amazon_product_parser import create_parser, process_excel
+except ImportError:
+    # Handle direct execution
+    import sys
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from amazon_product_parser import create_parser, process_excel
 
 
 class AmazonParserGUI:
@@ -28,7 +35,7 @@ class AmazonParserGUI:
         self.root.title("Amazon Product Parser")
         self.root.minsize(720, 520)
 
-        self.backend_var = tk.StringVar(value="static")
+        self.backend_var = tk.StringVar(value="playwright-fast")  # 默认使用快速模式
         self._last_excel_destination: str | None = None
 
         style = ttk.Style()
@@ -44,9 +51,8 @@ class AmazonParserGUI:
         heading = ttk.Label(
             container,
             text=(
-                "Use the tabs below to parse a single Amazon URL or process an Excel "
-                "workbook. These actions mirror the command line interface described "
-                "in the README."
+                "使用下面的标签页解析单个 Amazon URL 或处理 Excel 工作簿。"
+                "所有解析都使用 Playwright 动态渲染以获取完整的产品信息。"
             ),
             wraplength=680,
             justify="left",
@@ -90,19 +96,24 @@ class AmazonParserGUI:
         self.single_button = ttk.Button(frame, text="Parse product", command=self._on_parse_single)
         self.single_button.grid(row=1, column=2, sticky="e")
 
-        backend_label = ttk.Label(frame, text="Parser engine:")
+        backend_label = ttk.Label(frame, text="解析模式:")
         backend_label.grid(row=2, column=0, sticky="w", pady=(4, 0))
 
-        backend_static = ttk.Radiobutton(frame, text="Static HTML", variable=self.backend_var, value="static")
-        backend_static.grid(row=2, column=1, sticky="w", pady=(4, 0))
-
-        backend_dynamic = ttk.Radiobutton(
+        backend_standard = ttk.Radiobutton(
             frame,
-            text="Playwright (dynamic)",
+            text="标准模式 (完整解析)",
             variable=self.backend_var,
             value="playwright",
         )
-        backend_dynamic.grid(row=2, column=2, sticky="w", pady=(4, 0))
+        backend_standard.grid(row=2, column=1, sticky="w", pady=(4, 0))
+
+        backend_fast = ttk.Radiobutton(
+            frame,
+            text="快速模式 (推荐)",
+            variable=self.backend_var,
+            value="playwright-fast",
+        )
+        backend_fast.grid(row=2, column=2, sticky="w", pady=(4, 0))
 
         status_label = ttk.Label(frame, textvariable=self.single_status_var, foreground="gray")
         status_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 4))
@@ -153,25 +164,30 @@ class AmazonParserGUI:
         column_entry = ttk.Entry(frame, textvariable=self.excel_column_var, width=8)
         column_entry.grid(row=3, column=1, sticky="w", pady=(0, 4))
 
-        backend_label = ttk.Label(frame, text="Parser engine:")
+        backend_label = ttk.Label(frame, text="解析模式:")
         backend_label.grid(row=4, column=0, sticky="w")
 
-        backend_static = ttk.Radiobutton(frame, text="Static HTML", variable=self.backend_var, value="static")
-        backend_static.grid(row=4, column=1, sticky="w")
-
-        backend_dynamic = ttk.Radiobutton(
+        backend_standard = ttk.Radiobutton(
             frame,
-            text="Playwright (dynamic)",
+            text="标准模式 (完整解析)",
             variable=self.backend_var,
             value="playwright",
         )
-        backend_dynamic.grid(row=4, column=2, sticky="w")
+        backend_standard.grid(row=4, column=1, sticky="w")
+
+        backend_fast = ttk.Radiobutton(
+            frame,
+            text="快速模式 (推荐)",
+            variable=self.backend_var,
+            value="playwright-fast",
+        )
+        backend_fast.grid(row=4, column=2, sticky="w")
 
         hint = ttk.Label(
             frame,
             text=(
-                "Each Amazon URL or ASIN in the selected column will be fetched and parsed. "
-                "Results are written to adjacent columns, mirroring the CLI behaviour."
+                "每个 Amazon URL 或 ASIN 都会被获取和解析。"
+                "结果写入相邻列。推荐使用快速模式以提高处理速度。"
             ),
             wraplength=660,
             justify="left",

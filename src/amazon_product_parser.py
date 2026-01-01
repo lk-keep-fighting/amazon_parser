@@ -1,24 +1,22 @@
 """Amazon product parser.
 
-This module provides a lightweight parser that converts Amazon product pages
-into a structured :class:`AmazonProduct` data object.  It includes a static HTML
-parser powered by :mod:`requests` and :mod:`bs4`, and an optional
-Playwright-backed renderer for pages that require interactive expansion.
+This module provides a Playwright-powered parser that converts Amazon product pages
+into a structured :class:`AmazonProduct` data object. It uses a headless browser
+to render pages and expand dynamic content sections.
 
-The static parser exposes two main entry points:
+The parser exposes two main entry points:
 
-``AmazonProductParser.parse(url)``
+``PlaywrightAmazonProductParser.parse(url)``
     Fetches the target URL and returns structured product information.
 
-``AmazonProductParser.parse_html(html, url=None)``
+``PlaywrightAmazonProductParser.parse_html(html, url=None)``
     Parses an in-memory HTML string.  Useful for testing or when the caller
     already has the page content.
 
 The resulting :class:`AmazonProduct` instance can be easily serialised with the
 ``to_dict`` helper.  A small CLI is available via ``python -m
-src.amazon_product_parser <amazon-url>``.  Use
-``PlaywrightAmazonProductParser`` when the page relies on dynamic interactions
-(such as expandable specification tables).
+src.amazon_product_parser <amazon-url>``.  Use the fast mode for better
+performance while maintaining full functionality.
 """
 
 from __future__ import annotations
@@ -473,10 +471,10 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
         self,
         *,
         browser: str = "chromium",
-        headless: bool = False,
-        wait_until: Optional[str] = "load",
-        navigation_timeout: float = 45.0,
-        settle_timeout: float = 250,
+        headless: bool = True,  # 默认使用无头模式，更快
+        wait_until: Optional[str] = "domcontentloaded",  # 只等待 DOM 加载完成，不等待所有资源
+        navigation_timeout: float = 15.0,  # 减少导航超时时间
+        settle_timeout: float = 100,  # 减少等待时间
         extra_click_selectors: Optional[Iterable[str]] = None,
         fallback_to_static: bool = True,
     ) -> None:
@@ -532,12 +530,38 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
                         f"Unsupported Playwright browser '{self.browser}'. "
                         "Valid options are 'chromium', 'firefox', or 'webkit'."
                     )
-                browser = browser_factory.launch(headless=self.headless)
+                browser = browser_factory.launch(
+                    headless=self.headless,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--disable-gpu',
+                        '--disable-background-timer-throttling',
+                        '--disable-backgrounding-occluded-windows',
+                        '--disable-renderer-backgrounding',
+                        '--disable-features=TranslateUI',
+                        '--disable-ipc-flooding-protection',
+                    ]
+                )
                 context = browser.new_context(
                     user_agent=self.headers.get("User-Agent"),
                     locale="en-US",
                     extra_http_headers=self.headers,
+                    # 禁用图片和一些资源加载以提高速度
+                    bypass_csp=True,
+                    java_script_enabled=True,
+                    ignore_https_errors=True,
                 )
+                # 阻止不必要的资源加载
+                context.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ico,webp}", lambda route: route.abort())
+                context.route("**/analytics/**", lambda route: route.abort())
+                context.route("**/ads/**", lambda route: route.abort())
+                context.route("**/tracking/**", lambda route: route.abort())
+                
                 context.set_default_navigation_timeout(self.navigation_timeout_ms)
                 context.set_default_timeout(self.navigation_timeout_ms)
 
@@ -554,13 +578,14 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
                     # Continue with whatever content has loaded so far.
                     pass
 
-                # Ensure background requests settle so that expander content is loaded.
+                # 等待网络空闲状态，但设置较短的超时时间
                 try:
-                    page.wait_for_load_state("networkidle", timeout=self.navigation_timeout_ms)
+                    page.wait_for_load_state("networkidle", timeout=3000)  # 只等待 3 秒
                 except PlaywrightTimeoutError:
-                    # Ignore network idle timeouts – the page might never reach this state.
+                    # 忽略网络空闲超时 - 页面可能永远不会达到这个状态
                     pass
 
+                # 始终执行内容展开，这是重要功能
                 self._expand_dynamic_sections(page)
 
                 if self.settle_timeout_ms:
@@ -581,29 +606,41 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
                     browser.close()
 
     def _expand_dynamic_sections(self, page: Any) -> None:
+        # 快速滚动到页面底部
         try:
             page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(150)
+            page.wait_for_timeout(100)  # 稍微等待一下让内容加载
         except PlaywrightError:
             pass
 
+        # 限制点击展开器的数量，避免过度处理
+        clicked_count = 0
+        max_clicks = 10  # 限制最大点击次数
+        
         for selector in self.expander_selectors:
+            if clicked_count >= max_clicks:
+                break
+                
             try:
                 locator = page.locator(selector)
-                count = locator.count()
+                count = min(locator.count(), 5)  # 限制每个选择器最多处理5个元素
             except PlaywrightError:
                 continue
 
             for index in range(count):
+                if clicked_count >= max_clicks:
+                    break
+                    
                 element = locator.nth(index)
                 try:
                     if element.is_visible():
                         element.click()
-                        page.wait_for_timeout(100)
+                        clicked_count += 1
+                        page.wait_for_timeout(50)  # 减少等待时间
                 except PlaywrightError:
                     continue
 
-        # Forcefully expand expander containers when clicking is not enough.
+        # 强制展开内容（这个操作很快）
         try:
             page.evaluate(
                 """
@@ -623,16 +660,22 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
             pass
 
 
-def create_parser(engine: str = "static") -> AmazonProductParser:
+def create_parser(engine: str = "playwright") -> PlaywrightAmazonProductParser:
     """Return a parser instance for the requested engine name."""
 
-    normalized = (engine or "static").strip().lower()
-    if normalized in ("", "static"):
-        return AmazonProductParser()
-    if normalized == "playwright":
+    normalized = (engine or "playwright").strip().lower()
+    if normalized in ("", "playwright", "standard"):
         return PlaywrightAmazonProductParser()
+    if normalized == "playwright-fast":
+        # 快速模式：更短的超时时间，但保留内容展开功能
+        return PlaywrightAmazonProductParser(
+            headless=True,
+            wait_until="domcontentloaded",
+            navigation_timeout=8.0,
+            settle_timeout=50,
+        )
     raise ValueError(
-        f"Unsupported parser engine '{engine}'. Expected 'static' or 'playwright'."
+        f"Unsupported parser engine '{engine}'. Expected 'playwright' or 'playwright-fast'."
     )
 
 
@@ -903,11 +946,11 @@ def cli(argv: Optional[Iterable[str]] = None) -> int:
     )
     parser.add_argument(
         "--engine",
-        choices=("static", "playwright"),
-        default="static",
+        choices=("playwright", "playwright-fast"),
+        default="playwright-fast",
         help=(
-            "Parser engine to use. 'static' relies on requests/BeautifulSoup, while "
-            "'playwright' renders the page in a headless browser to expand dynamic sections."
+            "解析引擎选择。'playwright' 为标准模式（完整解析），"
+            "'playwright-fast' 为快速模式（推荐，速度更快）。"
         ),
     )
     args = parser.parse_args(args=list(argv) if argv is not None else None)
