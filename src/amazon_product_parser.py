@@ -25,11 +25,22 @@ import contextlib
 import json
 import re
 import sys
+import time
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 
 import requests
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S.%f'
+)
+perf_logger = logging.getLogger('perf')
+
 from bs4 import BeautifulSoup
 from openpyxl import load_workbook
 
@@ -146,31 +157,56 @@ class AmazonProductParser:
 
     def parse_html(self, html: str, url: Optional[str] = None) -> AmazonProduct:
         """Parse pre-fetched HTML into an :class:`AmazonProduct`."""
+        perf_logger.info(f"{'='*60}")
+        perf_logger.info(f"开始解析 HTML - URL: {url[:80] if url else 'None'}...")
+        perf_logger.info(f"HTML 大小: {len(html):,} 字符")
 
-        soup = BeautifulSoup(html, "html.parser")
+        with PerfTimer("BeautifulSoup 解析"):
+            soup = BeautifulSoup(html, "html.parser")
 
         product = AmazonProduct(url=url or "")
-        product.details = self._extract_details(soup)
-        product.asin = self._extract_asin(url, soup, product.details)
-        product.title = self._extract_title(soup)
-        product.price, product.currency = self._extract_price(soup)
-        product.rating = self._extract_rating(soup)
-        product.review_count = self._extract_review_count(soup)
-        product.bullet_points = self._extract_bullets(soup)
-        product.image = self._extract_main_image(soup)
+
+        with PerfTimer("提取 details"):
+            product.details = self._extract_details(soup)
+            perf_logger.info(f"  -> 提取到 {len(product.details)} 个详情字段")
+
+        with PerfTimer("提取 ASIN"):
+            product.asin = self._extract_asin(url, soup, product.details)
+
+        with PerfTimer("提取 title"):
+            product.title = self._extract_title(soup)
+
+        with PerfTimer("提取 price"):
+            product.price, product.currency = self._extract_price(soup)
+
+        with PerfTimer("提取 rating"):
+            product.rating = self._extract_rating(soup)
+
+        with PerfTimer("提取 review_count"):
+            product.review_count = self._extract_review_count(soup)
+
+        with PerfTimer("提取 bullet_points"):
+            product.bullet_points = self._extract_bullets(soup)
+            perf_logger.info(f"  -> 提取到 {len(product.bullet_points)} 个要点")
+
+        with PerfTimer("提取 image"):
+            product.image = self._extract_main_image(soup)
 
         # Enrich with structured data blocks when available.
-        self._enrich_from_structured_data(product, soup)
+        with PerfTimer("从 structured data 丰富数据"):
+            self._enrich_from_structured_data(product, soup)
 
         # Ensure ASIN consistency with the structured data.
         if not product.asin:
-            product.asin = self._asin_from_details(product.details)
+            with PerfTimer("从 details 提取 ASIN"):
+                product.asin = self._asin_from_details(product.details)
 
         if product.asin:
             detail_keys_lower = {key.lower() for key in product.details}
             if "asin" not in detail_keys_lower:
                 product.details["ASIN"] = product.asin
 
+        perf_logger.info(f"解析完成 - ASIN: {product.asin}, Title: {product.title[:50] if product.title else 'None'}...")
         return product
 
     # ------------------------------------------------------------------
@@ -493,11 +529,19 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
         self.expander_selectors: Tuple[str, ...] = tuple(selectors)
 
     def parse(self, url: str) -> AmazonProduct:
+        total_start = time.perf_counter()
+        perf_logger.info(f"{'='*60}")
+        perf_logger.info(f"[parse] 开始解析 URL: {url[:80]}...")
+        perf_logger.info(f"  模式: headless={self.headless}, wait_until={self.wait_until}")
+        perf_logger.info(f"  超时设置: navigation={self.navigation_timeout_ms}ms, settle={self.settle_timeout_ms}ms")
+
         try:
             html = self._render_url(url)
         except Exception as exc:
+            perf_logger.error(f"[parse] 渲染失败: {exc}")
             if not self.fallback_to_static:
                 raise
+            perf_logger.info("[parse] 尝试使用静态解析回退...")
             try:
                 return super().parse(url)
             except Exception:
@@ -522,142 +566,147 @@ class PlaywrightAmazonProductParser(AmazonProductParser):
 
         browser = None
         context = None
+        total_start = time.perf_counter()
         try:
+            perf_logger.info("[_render_url] 启动 Playwright...")
             with sync_playwright() as playwright:
-                browser_factory = getattr(playwright, self.browser, None)
-                if browser_factory is None:
-                    raise ValueError(
-                        f"Unsupported Playwright browser '{self.browser}'. "
-                        "Valid options are 'chromium', 'firefox', or 'webkit'."
+                with PerfTimer("启动浏览器"):
+                    browser_factory = getattr(playwright, self.browser, None)
+                    if browser_factory is None:
+                        raise ValueError(
+                            f"Unsupported Playwright browser '{self.browser}'. "
+                            "Valid options are 'chromium', 'firefox', or 'webkit'."
+                        )
+                    browser = browser_factory.launch(
+                        headless=self.headless,
+                        args=[
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-dev-shm-usage',
+                            '--disable-accelerated-2d-canvas',
+                            '--no-first-run',
+                            '--no-zygote',
+                            '--disable-gpu',
+                            '--disable-background-timer-throttling',
+                            '--disable-backgrounding-occluded-windows',
+                            '--disable-renderer-backgrounding',
+                            '--disable-features=TranslateUI',
+                            '--disable-ipc-flooding-protection',
+                        ]
                     )
-                browser = browser_factory.launch(
-                    headless=self.headless,
-                    args=[
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-accelerated-2d-canvas',
-                        '--no-first-run',
-                        '--no-zygote',
-                        '--disable-gpu',
-                        '--disable-background-timer-throttling',
-                        '--disable-backgrounding-occluded-windows',
-                        '--disable-renderer-backgrounding',
-                        '--disable-features=TranslateUI',
-                        '--disable-ipc-flooding-protection',
-                    ]
-                )
-                context = browser.new_context(
-                    user_agent=self.headers.get("User-Agent"),
-                    locale="en-US",
-                    extra_http_headers=self.headers,
-                    # 禁用图片和一些资源加载以提高速度
-                    bypass_csp=True,
-                    java_script_enabled=True,
-                    ignore_https_errors=True,
-                )
-                # 阻止不必要的资源加载
-                context.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ico,webp}", lambda route: route.abort())
-                context.route("**/analytics/**", lambda route: route.abort())
-                context.route("**/ads/**", lambda route: route.abort())
-                context.route("**/tracking/**", lambda route: route.abort())
-                
-                context.set_default_navigation_timeout(self.navigation_timeout_ms)
-                context.set_default_timeout(self.navigation_timeout_ms)
 
-                page = context.new_page()
-                page.set_default_navigation_timeout(self.navigation_timeout_ms)
-                page.set_default_timeout(self.navigation_timeout_ms)
+                with PerfTimer("创建浏览器上下文"):
+                    context = browser.new_context(
+                        user_agent=self.headers.get("User-Agent"),
+                        locale="en-US",
+                        extra_http_headers=self.headers,
+                        # 禁用图片和一些资源加载以提高速度
+                        bypass_csp=True,
+                        java_script_enabled=True,
+                        ignore_https_errors=True,
+                    )
+                    # 阻止不必要的资源加载
+                    context.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ico,webp}", lambda route: route.abort())
+                    context.route("**/analytics/**", lambda route: route.abort())
+                    context.route("**/ads/**", lambda route: route.abort())
+                    context.route("**/tracking/**", lambda route: route.abort())
+
+                    context.set_default_navigation_timeout(self.navigation_timeout_ms)
+                    context.set_default_timeout(self.navigation_timeout_ms)
+
+                with PerfTimer("创建页面"):
+                    page = context.new_page()
+                    page.set_default_navigation_timeout(self.navigation_timeout_ms)
+                    page.set_default_timeout(self.navigation_timeout_ms)
 
                 goto_kwargs: Dict[str, Any] = {}
                 if self.wait_until:
                     goto_kwargs["wait_until"] = self.wait_until
-                try:
-                    page.goto(url, **goto_kwargs)
-                except PlaywrightTimeoutError:
-                    # Continue with whatever content has loaded so far.
-                    pass
+
+                with PerfTimer(f"页面导航 (wait_until={self.wait_until})"):
+                    try:
+                        page.goto(url, **goto_kwargs)
+                    except PlaywrightTimeoutError:
+                        perf_logger.warning("  -> 导航超时，使用已加载的内容继续")
 
                 # 等待网络空闲状态，但设置较短的超时时间
-                try:
-                    page.wait_for_load_state("networkidle", timeout=3000)  # 只等待 3 秒
-                except PlaywrightTimeoutError:
-                    # 忽略网络空闲超时 - 页面可能永远不会达到这个状态
-                    pass
+                with PerfTimer("等待 networkidle (3000ms 超时)"):
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=3000)  # 只等待 3 秒
+                    except PlaywrightTimeoutError:
+                        perf_logger.warning("  -> networkidle 超时（这是正常的，继续处理）")
 
                 # 始终执行内容展开，这是重要功能
-                self._expand_dynamic_sections(page)
+                with PerfTimer("展开动态内容"):
+                    self._expand_dynamic_sections(page)
 
                 if self.settle_timeout_ms:
-                    with contextlib.suppress(PlaywrightError):
-                        page.wait_for_timeout(self.settle_timeout_ms)
+                    perf_logger.info(f"[SETTLE] 等待 {self.settle_timeout_ms}ms...")
+                    page.wait_for_timeout(self.settle_timeout_ms)
 
-                return page.content()
+                with PerfTimer("获取页面内容 (page.content())"):
+                    html = page.content()
+                    perf_logger.info(f"  -> 获取到 HTML: {len(html):,} 字符")
+
+                total_elapsed = (time.perf_counter() - total_start) * 1000
+                perf_logger.info(f"[_render_url] 总耗时: {total_elapsed:.2f}ms")
+                return html
         except PlaywrightTimeoutError as exc:
             raise RuntimeError(f"Timed out while rendering {url!r} with Playwright.") from exc
         except PlaywrightError as exc:
             raise RuntimeError(f"Playwright failed while rendering {url!r}: {exc}") from exc
         finally:
+            close_start = time.perf_counter()
             if context is not None:
                 with contextlib.suppress(Exception):
                     context.close()
             if browser is not None:
                 with contextlib.suppress(Exception):
                     browser.close()
+            close_elapsed = (time.perf_counter() - close_start) * 1000
+            if close_elapsed > 100:
+                perf_logger.info(f"[CLEANUP] 关闭浏览器耗时: {close_elapsed:.2f}ms")
 
     def _expand_dynamic_sections(self, page: Any) -> None:
-        # 快速滚动到页面底部
-        try:
-            page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-            page.wait_for_timeout(100)  # 稍微等待一下让内容加载
-        except PlaywrightError:
-            pass
+        # 快速模式：先用 JavaScript 强制展开所有内容（最快）
+        # 只有在需要时才点击展开器
 
-        # 限制点击展开器的数量，避免过度处理
-        clicked_count = 0
-        max_clicks = 10  # 限制最大点击次数
-        
-        for selector in self.expander_selectors:
-            if clicked_count >= max_clicks:
-                break
-                
+        # 先尝试强制展开（这通常足够了）
+        with PerfTimer("  [展开] 强制展开内容 (JavaScript)"):
             try:
-                locator = page.locator(selector)
-                count = min(locator.count(), 5)  # 限制每个选择器最多处理5个元素
+                expanded_count = page.evaluate(
+                    """
+                    () => {
+                        let count = 0;
+                        document.querySelectorAll('.a-expander-content, .a-expander').forEach((el) => {
+                            el.style.removeProperty('max-height');
+                            el.style.removeProperty('height');
+                            el.classList.remove('a-expander-collapsed-height');
+                            if (el.hasAttribute('aria-hidden')) {
+                                el.setAttribute('aria-hidden', 'false');
+                            }
+                            count++;
+                        });
+                        // 同时展开 aria-expanded=false 的元素
+                        document.querySelectorAll('[aria-expanded="false"]').forEach((el) => {
+                            el.setAttribute('aria-expanded', 'true');
+                            count++;
+                        });
+                        return count;
+                    }
+                    """
+                )
+                perf_logger.info(f"  -> JavaScript 展开了 {expanded_count} 个元素")
             except PlaywrightError:
-                continue
+                pass
 
-            for index in range(count):
-                if clicked_count >= max_clicks:
-                    break
-                    
-                element = locator.nth(index)
-                try:
-                    if element.is_visible():
-                        element.click()
-                        clicked_count += 1
-                        page.wait_for_timeout(50)  # 减少等待时间
-                except PlaywrightError:
-                    continue
-
-        # 强制展开内容（这个操作很快）
-        try:
-            page.evaluate(
-                """
-                () => {
-                    document.querySelectorAll('.a-expander-content, .a-expander').forEach((el) => {
-                        el.style.removeProperty('max-height');
-                        el.style.removeProperty('height');
-                        el.classList.remove('a-expander-collapsed-height');
-                        if (el.hasAttribute('aria-hidden')) {
-                            el.setAttribute('aria-hidden', 'false');
-                        }
-                    });
-                }
-                """
-            )
-        except PlaywrightError:
-            pass
+        # 滚动到页面底部（触发懒加载）
+        with PerfTimer("  [展开] 滚动到页面底部"):
+            try:
+                page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                # 快速模式不需要等待，因为后面已经用 JavaScript 展开了
+            except PlaywrightError:
+                pass
 
 
 def create_parser(engine: str = "playwright") -> PlaywrightAmazonProductParser:
@@ -668,11 +717,12 @@ def create_parser(engine: str = "playwright") -> PlaywrightAmazonProductParser:
         return PlaywrightAmazonProductParser()
     if normalized == "playwright-fast":
         # 快速模式：更短的超时时间，但保留内容展开功能
+        perf_logger.info("[create_parser] 创建快速模式解析器")
         return PlaywrightAmazonProductParser(
-            headless=True,
+            headless=True,  # 使用无头模式更快
             wait_until="domcontentloaded",
             navigation_timeout=8.0,
-            settle_timeout=50,
+            settle_timeout=0,  # 不需要额外等待
         )
     raise ValueError(
         f"Unsupported parser engine '{engine}'. Expected 'playwright' or 'playwright-fast'."
@@ -682,6 +732,33 @@ def create_parser(engine: str = "playwright") -> PlaywrightAmazonProductParser:
 # ----------------------------------------------------------------------
 # Utility helpers
 # ----------------------------------------------------------------------
+
+
+class PerfTimer:
+    """简单的性能计时器，用于记录各步骤耗时"""
+
+    def __init__(self, name: str, logger: logging.Logger = perf_logger):
+        self.name = name
+        self.logger = logger
+        self.start_time = None
+        self.end_time = None
+
+    def __enter__(self):
+        self.start_time = time.perf_counter()
+        self.logger.info(f"[START] {self.name}")
+        return self
+
+    def __exit__(self, *args):
+        self.end_time = time.perf_counter()
+        elapsed = (self.end_time - self.start_time) * 1000  # 转换为毫秒
+        self.logger.info(f"[DONE] {self.name} - 耗时: {elapsed:.2f}ms")
+
+    @property
+    def elapsed_ms(self) -> float:
+        if self.start_time is None:
+            return 0.0
+        end = self.end_time if self.end_time else time.perf_counter()
+        return (end - self.start_time) * 1000
 
 
 def _clean_text(text: Optional[str]) -> str:
@@ -817,6 +894,8 @@ def process_excel(
     Returns:
         The path to the workbook that contains the updated data.
     """
+    perf_logger.info(f"{'='*60}")
+    perf_logger.info(f"[Excel] 开始处理 Excel 文件: {input_path}")
 
     if column < 1:
         raise ValueError("column must be greater than or equal to 1")
@@ -872,6 +951,12 @@ def process_excel(
     data_start_row = 2 if has_header else 1
     max_row = worksheet.max_row or 0
 
+    perf_logger.info(f"[Excel] 工作表: {worksheet.title}, 数据范围: 第 {data_start_row}-{max_row} 行")
+    processed_count = 0
+    success_count = 0
+    error_count = 0
+    excel_start = time.perf_counter()
+
     for row_index in range(data_start_row, max_row + 1):
         cell_value = worksheet.cell(row=row_index, column=column).value
         if cell_value is None:
@@ -888,21 +973,36 @@ def process_excel(
         else:
             continue
 
+        processed_count += 1
+        row_start = time.perf_counter()
+        perf_logger.info(f"[Excel [{processed_count}/{max_row - data_start_row + 1}]] 处理行 {row_index}: {url_text[:80]}...")
+
         product: Optional[AmazonProduct]
         error_message = ""
         try:
             product = parser_instance.parse(url_text)
+            success_count += 1
         except Exception as exc:  # pragma: no cover - network/parse failures
             product = None
             error_message = str(exc)
+            error_count += 1
+            perf_logger.error(f"  [Excel] 错误: {exc}")
+
+        row_elapsed = (time.perf_counter() - row_start) * 1000
+        perf_logger.info(f"  [Excel] 行 {row_index} 完成 - 耗时: {row_elapsed:.2f}ms")
 
         for offset, (_, accessor) in enumerate(result_columns, start=1):
             value = accessor(product, error_message)
             worksheet.cell(row=row_index, column=column + offset, value=value)
 
     destination = str(output_path) if output_path else source_path
+    perf_logger.info(f"[Excel] 保存工作簿到: {destination}")
     workbook.save(destination)
     workbook.close()
+
+    total_elapsed = (time.perf_counter() - excel_start) / 60  # 转换为分钟
+    perf_logger.info(f"[Excel] 处理完成! 处理: {processed_count} 行, 成功: {success_count}, 失败: {error_count}")
+    perf_logger.info(f"[Excel] 总耗时: {total_elapsed:.2f} 分钟 (平均 {total_elapsed * 60 / processed_count:.2f} 秒/行)")
     return destination
 
 
